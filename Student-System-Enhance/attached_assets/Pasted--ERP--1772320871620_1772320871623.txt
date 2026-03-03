@@ -1,0 +1,527 @@
+دليل المبرمج لتطوير النظام: من نظام إدارة طلاب إلى منصة متكاملة (ERP)
+بناءً على شرحك للهيكل الحالي لنظامك، سأقدم لك خريطة طريق تفصيلية لتوسيعه إلى المنصة المتكاملة التي وصفناها سابقاً. سأركز على الجوانب المعمارية، توسيع قاعدة البيانات، إعادة هيكلة الأكواد، إضافة الوحدات الجديدة، آليات الأمان والصلاحيات، والتكامل مع الخدمات الخارجية. الهدف هو أن يكون لديك دليل عملي يرشدك في كتابة الأكواد وتنظيم المشروع.
+
+1. تحليل النظام الحالي وتحديد نقاط القوة للبناء عليها
+نظامك الحالي يتميز بالآتي:
+
+محرك هجرة ذكي من Excel إلى SQL مع تنظيف البيانات.
+
+نظام مالي ديناميكي يعتمد على الحساب اللحظي (تجميع المدفوعات بدلاً من تخزين رصيد ثابت).
+
+صلاحيات أساسية (مدير، مدرس، طالب) مع فلترة على مستوى الاستعلام (Row-Level Security).
+
+حذف آمن (Soft Delete) عبر is_deleted.
+
+تفاعل AJAX لتحديثات سلسة.
+
+تقارير بقوالب Word ثم تحويلها لـ PDF.
+
+هذه المكونات هي أساس متين. سنبني عليها وحدات جديدة مع الحفاظ على نفس النمط المعماري.
+
+2. إعادة هيكلة المشروع (Project Structure)
+لنظام كبير، يجب فصل الاهتمامات. أقترح التحول من ملف app.py واحد إلى هيكل معياري (Modular) باستخدام Flask Blueprints. الهيكل المقترح:
+
+text
+project_root/
+├── app/
+│   ├── __init__.py           # إنشاء التطبيق، تسجيل blueprints، تهيئة الإضافات (SQLAlchemy, Migrate, Login...)
+│   ├── models/                # نماذج قاعدة البيانات (مقسّمة حسب الوحدة)
+│   │   ├── __init__.py
+│   │   ├── user.py
+│   │   ├── student.py
+│   │   ├── teacher.py
+│   │   ├── crm.py             # العملاء، leads، opportunities
+│   │   ├── hr.py              # الموظفون، الإجازات، الحضور
+│   │   ├── finance.py         # الحسابات، الفواتير، القيود
+│   │   ├── inventory.py       # الأصناف، المستودعات
+│   │   └── ticket.py           # التذاكر
+│   ├── routes/                 # مسارات API (blueprints)
+│   │   ├── __init__.py
+│   │   ├── auth.py
+│   │   ├── admin.py
+│   │   ├── teacher.py
+│   │   ├── student.py
+│   │   ├── crm.py
+│   │   ├── hr.py
+│   │   ├── finance.py
+│   │   ├── inventory.py
+│   │   ├── reports.py
+│   │   └── support.py
+│   ├── services/               # منطق الأعمال المعقد
+│   │   ├── financial_service.py
+│   │   ├── payroll_service.py
+│   │   ├── notification_service.py
+│   │   └── report_generator.py
+│   ├── static/                  # CSS, JS, images
+│   │   ├── js/
+│   │   └── css/
+│   ├── templates/               # قوالب HTML (لكل وحدة مجلد)
+│   │   ├── admin/
+│   │   ├── teacher/
+│   │   ├── student/
+│   │   ├── crm/
+│   │   └── ...
+│   └── utils/                    # دوال مساعدة
+│       ├── decorators.py         # @role_required, @login_required
+│       ├── validators.py
+│       ├── helpers.py
+│       └── excel_importer.py
+├── migrations/                    # مجلد Alembic
+├── config.py                       # إعدادات التطبيق (بيئات مختلفة)
+├── requirements.txt
+├── run.py                          # نقطة الدخول لتشغيل التطبيق
+└── .env
+فوائد هذا الهيكل:
+
+قابلية الصيانة: كل جزء في مكانه.
+
+إعادة الاستخدام: يمكن استخدام الخدمات عبر عدة blueprints.
+
+التوسع السهل: إضافة وحدة جديدة لا تؤثر على القديم.
+
+الفصل الواضح: يمكن لعدة مطورين العمل على وحدات مختلفة بالتوازي.
+
+3. توسيع قاعدة البيانات (نموذج البيانات)
+3.1. نموذج المستخدمين والصلاحيات (متقدم)
+بدلاً من حقل role بسيط، سنستخدم نظام أدوار وصلاحيات متعدد إلى متعدد. هذا يسمح بصلاحيات دقيقة.
+
+python
+# app/models/user.py
+class User(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(80), unique=True)
+    password_hash = db.Column(db.String(128))
+    email = db.Column(db.String(120))
+    is_active = db.Column(db.Boolean, default=True)
+    # علاقات
+    roles = db.relationship('Role', secondary='user_roles', backref='users')
+    # ربط بالجداول الأخرى (طالب، موظف، مدرس...)
+    employee = db.relationship('Employee', backref='user', uselist=False)
+    customer = db.relationship('Customer', backref='user', uselist=False)
+
+class Role(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(50), unique=True)  # مثلاً 'admin', 'finance_manager', 'hr_specialist'
+    permissions = db.relationship('Permission', secondary='role_permissions')
+
+class Permission(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), unique=True)  # مثلاً 'view_financial_reports', 'edit_invoice', 'delete_user'
+
+# جداول الربط
+user_roles = db.Table('user_roles',
+    db.Column('user_id', db.Integer, db.ForeignKey('user.id')),
+    db.Column('role_id', db.Integer, db.ForeignKey('role.id'))
+)
+
+role_permissions = db.Table('role_permissions',
+    db.Column('role_id', db.Integer, db.ForeignKey('role.id')),
+    db.Column('permission_id', db.Integer, db.ForeignKey('permission.id'))
+)
+3.2. توسيع نموذج الطالب ليشمل العملاء (CRM)
+نضيف جدولاً للعملاء (Customers) يمكن أن يكونوا أفراداً أو شركات. الطالب هو نوع خاص من العملاء.
+
+python
+class Customer(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'))  # اختياري، إذا كان لديه حساب
+    name = db.Column(db.String(100))
+    email = db.Column(db.String(120))
+    phone = db.Column(db.String(20))
+    type = db.Column(db.String(20))  # individual, company
+    tax_number = db.Column(db.String(50))  # للشركات
+    source = db.Column(db.String(50))  # موقع، إعلان، توصية
+    status = db.Column(db.String(20), default='active')
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    # علاقات
+    opportunities = db.relationship('Opportunity', backref='customer')
+    contracts = db.relationship('Contract', backref='customer')
+    tickets = db.relationship('SupportTicket', backref='customer')
+
+class Student(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    customer_id = db.Column(db.Integer, db.ForeignKey('customer.id'))
+    university_id = db.Column(db.String(50))
+    teacher_name = db.Column(db.String(100))  # يمكن ربطه بجدول الموظفين لاحقاً
+    total_fees = db.Column(db.Float)
+    discount_type = db.Column(db.String(20))  # fixed, percentage
+    discount_value = db.Column(db.Float)
+    is_deleted = db.Column(db.Boolean, default=False)
+    # علاقات
+    customer = db.relationship('Customer', backref='student')
+    grades = db.relationship('Grade', backref='student')
+    payments = db.relationship('Payment', backref='student')
+3.3. الموظفين (HR)
+نظام الموارد البشرية يحتاج جدول Employee مرتبط بـ User.
+
+python
+class Employee(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), unique=True)
+    employee_number = db.Column(db.String(50), unique=True)
+    full_name = db.Column(db.String(100))
+    department_id = db.Column(db.Integer, db.ForeignKey('department.id'))
+    position = db.Column(db.String(100))
+    manager_id = db.Column(db.Integer, db.ForeignKey('employee.id'))
+    hire_date = db.Column(db.Date)
+    salary_base = db.Column(db.Float)
+    bank_account = db.Column(db.String(100))
+    status = db.Column(db.String(20), default='active')  # active, on_leave, terminated
+    # علاقات
+    department = db.relationship('Department')
+    manager = db.relationship('Employee', remote_side=[id])
+    leaves = db.relationship('LeaveRequest', backref='employee')
+    attendance = db.relationship('Attendance', backref='employee')
+
+class Department(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100))
+    parent_id = db.Column(db.Integer, db.ForeignKey('department.id'))  # للتسلسل الهرمي
+3.4. المحاسبة (Double-Entry)
+نحتاج إلى نموذج محاسبي متكامل: دليل حسابات، قيود يومية، فواتير.
+
+python
+class Account(db.Model):  # دليل الحسابات
+    id = db.Column(db.Integer, primary_key=True)
+    code = db.Column(db.String(20), unique=True)  # رقم الحساب
+    name = db.Column(db.String(100))
+    type = db.Column(db.String(20))  # asset, liability, equity, income, expense
+    parent_id = db.Column(db.Integer, db.ForeignKey('account.id'))
+    is_active = db.Column(db.Boolean, default=True)
+
+class JournalEntry(db.Model):  # قيد يومي
+    id = db.Column(db.Integer, primary_key=True)
+    entry_number = db.Column(db.String(50), unique=True)
+    date = db.Column(db.Date)
+    description = db.Column(db.String(200))
+    created_by = db.Column(db.Integer, db.ForeignKey('user.id'))
+    is_posted = db.Column(db.Boolean, default=False)
+    lines = db.relationship('JournalLine', backref='entry')
+
+class JournalLine(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    entry_id = db.Column(db.Integer, db.ForeignKey('journal_entry.id'))
+    account_id = db.Column(db.Integer, db.ForeignKey('account.id'))
+    debit = db.Column(db.Float, default=0)
+    credit = db.Column(db.Float, default=0)
+    description = db.Column(db.String(200))
+
+class Invoice(db.Model):  # فاتورة مبيعات أو مشتريات
+    id = db.Column(db.Integer, primary_key=True)
+    invoice_number = db.Column(db.String(50), unique=True)
+    type = db.Column(db.String(20))  # sales, purchase
+    customer_id = db.Column(db.Integer, db.ForeignKey('customer.id'))  # للمبيعات
+    vendor_id = db.Column(db.Integer, db.ForeignKey('vendor.id'))  # للمشتريات
+    date = db.Column(db.Date)
+    due_date = db.Column(db.Date)
+    subtotal = db.Column(db.Float)
+    tax = db.Column(db.Float)
+    total = db.Column(db.Float)
+    paid_amount = db.Column(db.Float, default=0)
+    status = db.Column(db.String(20), default='unpaid')  # unpaid, paid, partially_paid, cancelled
+    # علاقات
+    items = db.relationship('InvoiceItem', backref='invoice')
+    payments = db.relationship('Payment', backref='invoice')
+
+class Payment(db.Model):  # مدفوعات (مرتبطة بفاتورة أو بدون)
+    id = db.Column(db.Integer, primary_key=True)
+    payment_number = db.Column(db.String(50), unique=True)
+    invoice_id = db.Column(db.Integer, db.ForeignKey('invoice.id'), nullable=True)
+    customer_id = db.Column(db.Integer, db.ForeignKey('customer.id'), nullable=True)
+    amount = db.Column(db.Float)
+    method = db.Column(db.String(20))  # cash, card, bank_transfer
+    reference = db.Column(db.String(100))  # رقم الإيصال أو العملية
+    date = db.Column(db.DateTime, default=datetime.utcnow)
+    received_by = db.Column(db.Integer, db.ForeignKey('user.id'))
+3.5. المخزون (Inventory)
+python
+class Product(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    sku = db.Column(db.String(50), unique=True)
+    name = db.Column(db.String(200))
+    description = db.Column(db.Text)
+    category_id = db.Column(db.Integer, db.ForeignKey('category.id'))
+    unit = db.Column(db.String(20))
+    purchase_price = db.Column(db.Float)
+    selling_price = db.Column(db.Float)
+    current_stock = db.Column(db.Float, default=0)
+    min_stock = db.Column(db.Float, default=0)
+    location = db.Column(db.String(100))
+
+class Warehouse(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100))
+    location = db.Column(db.String(200))
+    manager_id = db.Column(db.Integer, db.ForeignKey('employee.id'))
+
+class StockMovement(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    product_id = db.Column(db.Integer, db.ForeignKey('product.id'))
+    warehouse_id = db.Column(db.Integer, db.ForeignKey('warehouse.id'))
+    type = db.Column(db.String(20))  # in, out, transfer
+    quantity = db.Column(db.Float)
+    reference_type = db.Column(db.String(50))  # purchase_order, sales_invoice, adjustment
+    reference_id = db.Column(db.Integer)
+    date = db.Column(db.DateTime, default=datetime.utcnow)
+    notes = db.Column(db.String(200))
+3.6. التذاكر والدعم
+python
+class SupportTicket(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    ticket_number = db.Column(db.String(50), unique=True)
+    customer_id = db.Column(db.Integer, db.ForeignKey('customer.id'))
+    subject = db.Column(db.String(200))
+    description = db.Column(db.Text)
+    category = db.Column(db.String(50))  # technical, billing, inquiry
+    priority = db.Column(db.String(20))  # low, medium, high, urgent
+    status = db.Column(db.String(20), default='open')  # open, in_progress, resolved, closed
+    assigned_to = db.Column(db.Integer, db.ForeignKey('user.id'))
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    resolved_at = db.Column(db.DateTime)
+    # علاقات
+    messages = db.relationship('TicketMessage', backref='ticket')
+
+class TicketMessage(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    ticket_id = db.Column(db.Integer, db.ForeignKey('support_ticket.id'))
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    message = db.Column(db.Text)
+    is_internal = db.Column(db.Boolean, default=False)  # ملاحظة داخلية لا يراها العميل
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+ملاحظة: هذه النماذج هي الأساس. ستحتاج إلى ضبط العلاقات وإضافة الحقول المناسبة حسب متطلباتك الدقيقة.
+
+4. نظام الصلاحيات المتقدم (RBAC) وتطبيقه
+4.1. Decorator للتحقق من الصلاحيات
+بدلاً من @login_required البسيط، سننشئ @permission_required يتحقق من أن المستخدم لديه صلاحية معينة (أو أحد الأدوار التي تملكها).
+
+python
+# app/utils/decorators.py
+from functools import wraps
+from flask import flash, redirect, url_for
+from flask_login import current_user
+
+def permission_required(permission_name):
+    def decorator(f):
+        @wraps(f)
+        def decorated_function(*args, **kwargs):
+            if not current_user.is_authenticated:
+                flash('Please log in.', 'warning')
+                return redirect(url_for('auth.login'))
+            # تحقق من وجود الصلاحية في أدوار المستخدم
+            user_permissions = set()
+            for role in current_user.roles:
+                for perm in role.permissions:
+                    user_permissions.add(perm.name)
+            if permission_name not in user_permissions:
+                flash('You do not have permission to access this page.', 'danger')
+                return redirect(url_for('main.index'))
+            return f(*args, **kwargs)
+        return decorated_function
+    return decorator
+ثم نستخدمه في المسارات:
+
+python
+@bp.route('/financial-reports')
+@permission_required('view_financial_reports')
+def financial_reports():
+    ...
+4.2. فلترة البيانات على مستوى الصف (Row-Level Security)
+مثلما فعلت مع المدرس، سنعمم هذا المفهوم. لكل نموذج يمكن إضافة قواعد وصول تعتمد على المستخدم. على سبيل المثال، في get_queryset يمكن تطبيق الشروط ديناميكياً.
+
+python
+# مثال: في مسار عرض العملاء
+def get_customers_query():
+    if current_user.has_permission('view_all_customers'):  # صلاحية شاملة
+        return Customer.query
+    else:
+        # فقط العملاء المسندين لهذا المستخدم (مثلاً مندوب مبيعات)
+        return Customer.query.filter_by(sales_rep_id=current_user.employee.id)
+5. تنفيذ الوحدات الجديدة (Blueprints)
+سننشئ لكل وحدة (CRM, HR, Finance, Inventory, Support) blueprint منفصل.
+
+مثال على crm.py:
+
+python
+from flask import Blueprint, render_template, request, jsonify
+from app.models.crm import Customer, Opportunity
+from app.utils.decorators import permission_required
+
+crm_bp = Blueprint('crm', __name__, url_prefix='/crm')
+
+@crm_bp.route('/customers')
+@permission_required('view_customers')
+def customers_list():
+    customers = Customer.query.filter_by(is_active=True).all()
+    return render_template('crm/customers.html', customers=customers)
+
+@crm_bp.route('/api/customers', methods=['POST'])
+@permission_required('add_customer')
+def add_customer():
+    data = request.get_json()
+    # منطق إضافة عميل جديد
+    ...
+    return jsonify({'status': 'success'})
+ثم نسجل هذه blueprints في app/__init__.py:
+
+python
+from app.routes.crm import crm_bp
+app.register_blueprint(crm_bp)
+6. منطق الأعمال (Services)
+نفصل المنطق المعقد في طبقة خدمات. مثلاً، خدمة محاسبية تقوم بإنشاء قيد تلقائي عند إصدار فاتورة.
+
+python
+# app/services/financial_service.py
+from app.models.finance import JournalEntry, JournalLine, Account
+
+def create_invoice_journal_entry(invoice):
+    """إنشاء قيد محاسبي من فاتورة مبيعات"""
+    # حساب الإيراد
+    revenue_account = Account.query.filter_by(code='4000').first()  # حساب الإيرادات
+    receivable_account = Account.query.filter_by(code='1100').first()  # حساب العملاء
+
+    entry = JournalEntry(
+        entry_number=f"INV-{invoice.invoice_number}",
+        date=invoice.date,
+        description=f"فاتورة مبيعات {invoice.invoice_number}",
+        created_by=current_user.id
+    )
+    db.session.add(entry)
+    db.session.flush()  # للحصول على ID
+
+    # سطر مدين: حساب العميل (أو النقدية)
+    line1 = JournalLine(
+        entry_id=entry.id,
+        account_id=receivable_account.id,
+        debit=invoice.total,
+        credit=0,
+        description="قيمة الفاتورة"
+    )
+    # سطر دائن: حساب الإيرادات
+    line2 = JournalLine(
+        entry_id=entry.id,
+        account_id=revenue_account.id,
+        debit=0,
+        credit=invoice.total,
+        description="إيرادات مبيعات"
+    )
+    db.session.add_all([line1, line2])
+    db.session.commit()
+يتم استدعاء هذه الخدمة من داخل blueprint بعد إنشاء الفاتورة.
+
+7. التعامل مع الإشعارات والتنبيهات
+استخدم WebSockets (مثلاً Flask-SocketIO) للإشعارات اللحظية. أو استخدم خدمة خارجية مثل Pusher. للإشعارات غير اللحظية، استخدم Celery مع Redis لإرسال البريد الإلكتروني والرسائل النصية في الخلفية.
+
+مثال على مهمة Celery:
+
+python
+# app/tasks/email_tasks.py
+from celery import Celery
+from flask_mail import Message
+
+celery = Celery(__name__)
+
+@celery.task
+def send_invoice_email(invoice_id, recipient):
+    invoice = Invoice.query.get(invoice_id)
+    msg = Message('Your Invoice', recipients=[recipient])
+    msg.body = f"Invoice {invoice.invoice_number} amount {invoice.total}"
+    mail.send(msg)
+في مسار إنشاء الفاتورة، نقوم بـ:
+
+python
+send_invoice_email.delay(invoice.id, customer.email)
+8. التكامل مع الأنظمة الخارجية
+8.1. بوابات الدفع
+أنشئ خدمة تتعامل مع بوابة الدفع. مثلاً لـ Stripe:
+
+python
+import stripe
+
+def create_stripe_payment_intent(invoice):
+    intent = stripe.PaymentIntent.create(
+        amount=int(invoice.total * 100),  # بالسنت
+        currency='sar',
+        metadata={'invoice_id': invoice.id}
+    )
+    return intent.client_secret
+ثم في الواجهة الأمامية، استخدم JavaScript لتنفيذ الدفع.
+
+8.2. أجهزة الحضور
+إذا كانت الأجهزة تدعم API، قم بإنشاء مهمة مجدولة (Cron job) تسحب بيانات الحضور كل ليلة وتحولها إلى نموذج Attendance.
+
+8.3. التقويم
+استخدم مكتبة google-api-python-client لمزامنة المواعيد.
+
+9. تحسين الأداء (Performance)
+استخدم Redis للتخزين المؤقت: قم بتخزين نتائج الاستعلامات الثقيلة (مثل لوحة التحكم) لمدة قصيرة.
+
+الفهرسة (Indexes): أضف indexes على الحقول التي يتم البحث فيها أو التجميع عليها (مثل customer_id، date).
+
+استخدم Pagination: في جميع القوائم التي قد تكبر.
+
+تجميع البيانات (Aggregation): بدلاً من استدعاء count() لكل علاقة، استخدم استعلامات تجميعية.
+
+10. التقارير المتقدمة
+10.1. منشئ التقارير المخصص
+يمكنك بناء واجهة تسمح للمستخدم باختيار الحقول والفلاتر، ثم ديناميكياً بناء استعلام SQLAlchemy وتصدير النتيجة. استخدم مكتبة مثل Pandas لتحويل البيانات إلى DataFrame ثم إلى Excel/PDF.
+
+10.2. تقارير PDF باستخدام قوالب HTML
+بدلاً من Word، استخدم HTML/CSS ثم حولها إلى PDF باستخدام WeasyPrint أو pdfkit. هذا أسهل لتنسيق التقارير المعقدة.
+
+مثال:
+
+python
+from weasyprint import HTML
+html = render_template('reports/invoice_template.html', invoice=invoice)
+pdf = HTML(string=html).write_pdf()
+response = make_response(pdf)
+response.headers['Content-Type'] = 'application/pdf'
+return response
+11. الأمان المتقدم
+HTTPS إلزامي: استخدم Flask-Talisman لفرض HTTPS وإعدادات الأمان.
+
+تحديد معدل الطلبات (Rate Limiting): استخدم Flask-Limiter لمنع الهجمات.
+
+سجل التدقيق (Audit Log): أنشئ جدول AuditLog يسجل كل عملية تعديل على البيانات الحساسة. استخدم حدث after_insert, after_update في SQLAlchemy لملئه تلقائياً.
+
+python
+@event.listens_for(Invoice, 'after_update')
+def log_invoice_update(mapper, connection, target):
+    # سجل التغيير في جدول audit_log
+    ...
+12. خطوات التنفيذ المقترحة (Roadmap)
+إعادة هيكلة المشروع: نقل الكود الحالي إلى الهيكل الجديد، مع الحفاظ على الوظائف.
+
+توسيع نموذج المستخدمين والصلاحيات: إضافة جداول roles, permissions، وربطها بالمستخدمين.
+
+إضافة وحدة CRM: إنشاء نماذج العملاء، leads، opportunities، وتحويل الطالب الحالي إلى عميل.
+
+إضافة وحدة الموارد البشرية: نماذج الموظفين، الأقسام، الحضور، الإجازات.
+
+تطوير النظام المحاسبي: بناء دليل الحسابات، القيود اليومية، وربط الفواتير الحالية به.
+
+إضافة المخزون والمشتريات.
+
+بناء نظام التذاكر والدعم.
+
+تطوير لوحات المعلومات والتقارير.
+
+التكامل مع الخدمات الخارجية (دفع، حضور، تقويم).
+
+الاختبار والنشر.
+
+13. أدوات وتقنيات مساعدة
+Flask-Migrate (Alembic): لإدارة تغييرات قاعدة البيانات.
+
+Flask-SocketIO: للإشعارات اللحظية.
+
+Celery + Redis: للمهام الخلفية.
+
+Flask-Caching: للتخزين المؤقت.
+
+Flask-Admin: لواجهة إدارة سريعة (اختياري).
+
+Flask-RESTx: لبناء API موثق.
+
+Pytest: لكتابة اختبارات.
+
