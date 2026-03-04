@@ -1,7 +1,8 @@
 FROM node:18
-WORKDIR /app
-COPY package*.json ./
+# الانتقال للمجلد الذي يحتوي على ملفات المشروع الفعلية
+WORKDIR /app/Student-System-Enhance
+COPY Student-System-Enhance/package*.json ./
 RUN npm install
-COPY . .
+COPY Student-System-Enhance/ .
 RUN npm run build
 CMD ["npm", "start"]
